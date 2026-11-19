@@ -1,0 +1,41 @@
+# docker compose up --build      (copy .env.example to .env and fill in secrets + an LLM key first)
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-intelliquery}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      IQ_APP_PASSWORD: ${IQ_APP_PASSWORD:?set IQ_APP_PASSWORD in .env}
+      IQ_RO_PASSWORD: ${IQ_RO_PASSWORD:?set IQ_RO_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/00_roles.sh:/docker-entrypoint-initdb.d/00_roles.sh:ro
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-intelliquery}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports: ["127.0.0.1:5432:5432"]
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      APP_DATABASE_URL: postgresql+psycopg://iq_app:${IQ_APP_PASSWORD}@db:5432/${POSTGRES_DB:-intelliquery}
+      READONLY_DATABASE_URL: postgresql+psycopg://iq_readonly:${IQ_RO_PASSWORD}@db:5432/${POSTGRES_DB:-intelliquery}
+    depends_on:
+      db: { condition: service_healthy }
+    ports: ["127.0.0.1:8000:8000"]
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on: [backend]
+    ports: ["8080:80"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:

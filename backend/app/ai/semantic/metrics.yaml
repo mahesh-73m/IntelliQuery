@@ -1,0 +1,161 @@
+# Semantic layer: business definitions + ambiguity lexicon.
+# This file is the single source of truth for (a) how metrics are computed in SQL and
+# (b) which phrases are ambiguous and what the valid interpretations are.
+
+time_expression_pattern: '\b(last|past|previous|prior|this|current)\s+(\d+\s+)?(day|week|month|quarter|year)s?\b|\btoday\b|\byesterday\b|\bytd\b|\byear to date\b|\bsince\b|\bbetween\b|\b(in|during|for)\s+(20\d\d|january|february|march|april|may|june|july|august|september|october|november|december)\b|\b20\d\d\b|\bq[1-4]\b|\ball[- ]time\b|\boverall\b|\bever\b|\bso far\b'
+
+defaults:
+  limit: 10
+  notes:
+    - "Ranking questions with no explicit N use LIMIT 10."
+    - "Lists with no explicit N use LIMIT 100."
+    - "Sort direction: descending for 'top/most/highest', ascending for 'lowest/least/fewest'."
+
+glossary:
+  - "orders.status values: pending, shipped, completed, cancelled, refunded."
+  - "revenue = SUM(order_items.quantity * order_items.unit_price) over orders with status IN ('completed','shipped'). Call the column total_revenue."
+  - "units sold = SUM(order_items.quantity) over orders with status IN ('completed','shipped')."
+  - "'orders placed' / order count = COUNT of orders of ANY status unless the user names a status."
+  - "average order value = AVG(orders.total_amount) over orders with status IN ('completed','shipped')."
+  - "profit = SUM(order_items.quantity * (order_items.unit_price - products.cost)) over completed/shipped orders."
+  - "last month = the previous CALENDAR month: order_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month' AND order_date < date_trunc('month', CURRENT_DATE)."
+  - "this month = order_date >= date_trunc('month', CURRENT_DATE). this year = order_date >= date_trunc('year', CURRENT_DATE)."
+  - "last N days = order_date >= CURRENT_DATE - INTERVAL 'N days'."
+  - "'new customers' / signups use customers.created_at. Order timing always uses orders.order_date."
+  - "Use CURRENT_DATE for 'today'; never hard-code dates."
+
+# Each term: regex `pattern` (case-insensitive) detects the vague phrase.
+# `unless` suppresses the question when the user already made the choice explicit.
+# `unless_time_expr: true` suppresses it when the question already states a time period.
+# Every option must lead to materially different SQL (otherwise we would not ask).
+ambiguous_terms:
+  - id: best_customers
+    priority: 10
+    slot: metric
+    pattern: '\b(best|top|greatest|most valuable|good|loyal|biggest|leading)\s+(\d+\s+)?customers?\b'
+    unless: '\b(by|in terms of|based on|according to|ranked|with the (most|highest|largest))\b|\b(revenue|spend|spent|sales|orders?|purchases?|frequen\w*|amount)\b'
+    question: "What do you mean by best customers?"
+    options:
+      - id: revenue
+        label: "Customers who generated the highest revenue"
+        instruction: "Rank customers by revenue (SUM(oi.quantity*oi.unit_price) over completed/shipped orders), output column total_revenue, descending."
+      - id: order_count
+        label: "Customers who placed the most orders"
+        instruction: "Rank customers by number of orders (COUNT(DISTINCT o.id), orders of any status), output column order_count, descending."
+      - id: purchase_days
+        label: "Customers who purchased most frequently"
+        instruction: "Rank customers by number of distinct purchase days (COUNT(DISTINCT o.order_date), orders of any status), output column purchase_days, descending."
+
+  - id: best_selling_products
+    priority: 10
+    slot: metric
+    pattern: '\b(best|top|greatest|leading)[- ]?(selling\s+)?(\d+\s+)?products?\b|\b(most\s+popular|popular)\s+(\d+\s+)?products?\b|\bbest[- ]?sellers?\b|\bbest[- ]selling\b'
+    unless: '\b(by|in terms of|based on|according to|ranked|with the (most|highest))\b|\b(revenue|sales|units?|quantity|sold|orders?|profit\w*)\b'
+    question: "What do you mean by best-selling products?"
+    options:
+      - id: quantity
+        label: "Highest quantity sold"
+        instruction: "Rank products by units sold (SUM(oi.quantity) over completed/shipped orders), output column units_sold, descending."
+      - id: revenue
+        label: "Highest revenue generated"
+        instruction: "Rank products by revenue (SUM(oi.quantity*oi.unit_price) over completed/shipped orders), output column total_revenue, descending."
+      - id: order_count
+        label: "Appearing in the most orders"
+        instruction: "Rank products by number of distinct orders containing them (COUNT(DISTINCT oi.order_id), completed/shipped orders), output column order_count, descending."
+
+  - id: best_categories
+    priority: 10
+    slot: metric
+    pattern: '\b(best|top|popular|leading)[- ]?(selling\s+)?(\d+\s+)?categor(y|ies)\b'
+    unless: '\b(by|in terms of|based on|according to|ranked)\b|\b(revenue|sales|units?|quantity|sold|orders?|profit\w*)\b'
+    question: "What do you mean by top categories?"
+    options:
+      - id: revenue
+        label: "Highest revenue generated"
+        instruction: "Rank categories by revenue (SUM(oi.quantity*oi.unit_price) over completed/shipped orders), output column total_revenue, descending."
+      - id: quantity
+        label: "Highest quantity sold"
+        instruction: "Rank categories by units sold (SUM(oi.quantity) over completed/shipped orders), output column units_sold, descending."
+
+  - id: profitable_products
+    priority: 10
+    slot: metric
+    pattern: '\bprofitable\b'
+    unless: '\b(margin|total profit|gross profit|profit margin|per unit)\b'
+    question: "How should I measure profitability?"
+    options:
+      - id: total_profit
+        label: "Highest total profit"
+        instruction: "Rank products by total profit SUM(oi.quantity*(oi.unit_price-p.cost)) over completed/shipped orders, output column total_profit, descending."
+      - id: margin
+        label: "Highest profit margin percentage"
+        instruction: "Rank products by margin % = ROUND(100.0*SUM(oi.quantity*(oi.unit_price-p.cost))/NULLIF(SUM(oi.quantity*oi.unit_price),0),2) over completed/shipped orders, output column margin_pct, descending."
+
+  - id: big_orders
+    priority: 20
+    slot: filter
+    pattern: '\b(large|big|biggest|largest|high[- ]value|expensive)\s+orders?\b'
+    unless: '\b(over|above|more than|greater|exceed\w*|at least)\b|\$'
+    question: "What counts as a large order?"
+    options:
+      - id: top_n
+        label: "The 10 largest orders by amount"
+        instruction: "Show the 10 orders with highest total_amount (all statuses), descending."
+      - id: above_average
+        label: "Orders above the average order amount"
+        instruction: "Show orders whose total_amount is greater than the average total_amount of all orders, descending by total_amount."
+
+  - id: active_customers
+    priority: 30
+    slot: time_period
+    pattern: '\bactive\s+customers?\b'
+    unless_time_expr: true
+    question: "How recently must a customer have ordered to count as active?"
+    options:
+      - id: d30
+        label: "Ordered in the last 30 days"
+        instruction: "Active = at least one order (any status) with order_date >= CURRENT_DATE - INTERVAL '30 days'."
+      - id: d90
+        label: "Ordered in the last 90 days"
+        instruction: "Active = at least one order (any status) with order_date >= CURRENT_DATE - INTERVAL '90 days'."
+      - id: d365
+        label: "Ordered in the last 12 months"
+        instruction: "Active = at least one order (any status) with order_date >= CURRENT_DATE - INTERVAL '365 days'."
+
+  - id: recent
+    priority: 30
+    slot: time_period
+    pattern: '\b(recent|recently)\b'
+    unless: '\bmost recent\b'
+    unless_time_expr: true
+    question: "How far back should 'recent' go?"
+    options:
+      - id: d7
+        label: "Last 7 days"
+        instruction: "Interpret 'recent' as the last 7 days: date >= CURRENT_DATE - INTERVAL '7 days' (orders.order_date, or customers.created_at for customers)."
+      - id: d30
+        label: "Last 30 days"
+        instruction: "Interpret 'recent' as the last 30 days: date >= CURRENT_DATE - INTERVAL '30 days' (orders.order_date, or customers.created_at for customers)."
+      - id: d90
+        label: "Last 90 days"
+        instruction: "Interpret 'recent' as the last 90 days: date >= CURRENT_DATE - INTERVAL '90 days' (orders.order_date, or customers.created_at for customers)."
+
+  - id: trend_period
+    priority: 40
+    slot: time_period
+    pattern: '\b(trend\w*|over time|growth|monthly|weekly|daily|seasonal\w*)\b'
+    unless_time_expr: true
+    question: "What time range should the trend cover?"
+    options:
+      - id: d30
+        label: "Last 30 days (daily)"
+        instruction: "Time range: last 30 days (order_date >= CURRENT_DATE - INTERVAL '30 days'), grouped by day using date_trunc('day', o.order_date), ordered chronologically."
+      - id: d90
+        label: "Last 90 days (weekly)"
+        instruction: "Time range: last 90 days (order_date >= CURRENT_DATE - INTERVAL '90 days'), grouped by week using date_trunc('week', o.order_date), ordered chronologically."
+      - id: m12
+        label: "Last 12 months (monthly)"
+        instruction: "Time range: last 12 months (order_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '11 months'), grouped by month using date_trunc('month', o.order_date), ordered chronologically."
+      - id: all
+        label: "All available data (monthly)"
+        instruction: "Time range: all data (no date filter), grouped by month using date_trunc('month', o.order_date), ordered chronologically."
